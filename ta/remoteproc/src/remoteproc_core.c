@@ -169,7 +169,7 @@ struct remoteproc_sig_algo {
  * @fw_img_sz:   Byte size of the firmware image
  * @hash_table:  Location of a copy of the segment's hash table
  * @nb_segment:  number of segment to load
- * @rsc_pa:      Physical address of the firmware resource table
+ * @rsc_da:      device address of the firmware resource table
  * @rsc_size:    Byte size of the firmware resource table
  * @state:       Remote-processor state
  * @hw_fmt:      Image format capabilities of the remoteproc PTA
@@ -185,7 +185,7 @@ struct remoteproc_context {
 	size_t fw_img_sz;
 	struct remoteproc_segment *hash_table;
 	uint32_t nb_segment;
-	paddr_t rsc_pa;
+	uint32_t rsc_da;
 	size_t rsc_size;
 	enum remoteproc_state state;
 	uint32_t hw_fmt;
@@ -573,31 +573,6 @@ static paddr_t remoteproc_da_to_pa(uint32_t da, size_t size,
 	return pa;
 }
 
-static TEE_Result remoteproc_parse_rsc_table(struct remoteproc_context *ctx,
-					     uint8_t *fw_img, size_t fw_img_sz,
-					     paddr_t *rsc_pa,
-					     size_t *rsc_size)
-{
-	uint32_t da = 0;
-	TEE_Result res = TEE_ERROR_GENERIC;
-	Elf32_Word size = 0;
-
-	res = e32_parser_find_rsc_table(fw_img, fw_img_sz, &da, &size);
-	if (res)
-		return res;
-
-	DMSG("Resource table device address %#"PRIx32" size %#"PRIx32,
-	     da, size);
-
-	*rsc_pa = remoteproc_da_to_pa(da, size, ctx);
-	if (!*rsc_pa)
-		return TEE_ERROR_ACCESS_DENIED;
-
-	*rsc_size = size;
-
-	return TEE_SUCCESS;
-}
-
 static TEE_Result get_hash_table(struct remoteproc_context *ctx)
 {
 	TEE_Result res = TEE_ERROR_GENERIC;
@@ -782,7 +757,7 @@ static TEE_Result remoteproc_load_elf(struct remoteproc_context *ctx)
 	uint8_t *tlv = NULL;
 	int32_t offset = 0;
 	size_t length = 0;
-	paddr_t rsc_pa = 0;
+	uint32_t rsc_da = 0;
 	size_t rsc_size = 0;
 
 	res = e32_parse_ehdr(ctx->fw_img, ctx->fw_img_sz);
@@ -815,7 +790,7 @@ static TEE_Result remoteproc_load_elf(struct remoteproc_context *ctx)
 	 * Initialize resource table with zero. These values will be returned if
 	 * no optional resource table is found in images.
 	 */
-	ctx->rsc_pa = 0;
+	ctx->rsc_da = 0;
 	ctx->rsc_size = 0;
 
 	for (i = 0; i < num_img; i++) {
@@ -837,23 +812,25 @@ static TEE_Result remoteproc_load_elf(struct remoteproc_context *ctx)
 			goto out;
 
 		/* Take opportunity to get the resource table address */
-		res = remoteproc_parse_rsc_table(ctx, ctx->fw_img + offset,
-						 img_size, &rsc_pa, &rsc_size);
+		res = e32_parser_find_rsc_table(ctx->fw_img + offset, img_size,
+						&rsc_da, &rsc_size);
 		if (res != TEE_SUCCESS && res != TEE_ERROR_NO_DATA)
 			goto out;
 
+		DMSG("Resource table device address %#"PRIx32" size %#"PRIx32,
+		     rsc_da, rsc_size);
+
 		if (res == TEE_SUCCESS) {
-			/*
-			 * Only one resource table is supported, check that no
+			 /* Only one resource table is supported, check that no
 			 * other one has been declared in a previously loaded
 			 * firmware.
 			 */
-			if (ctx->rsc_pa || ctx->rsc_size) {
+			if (ctx->rsc_size) {
 				EMSG("More than one resource table found");
 				res = TEE_ERROR_BAD_FORMAT;
 				goto out;
 			}
-			ctx->rsc_pa = rsc_pa;
+			ctx->rsc_da = rsc_da;
 			ctx->rsc_size = rsc_size;
 		} else {
 			/*
@@ -1016,8 +993,9 @@ static TEE_Result remoteproc_get_rsc_table(uint32_t pt,
 	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
 						TEE_PARAM_TYPE_VALUE_OUTPUT,
 						TEE_PARAM_TYPE_VALUE_OUTPUT,
-						TEE_PARAM_TYPE_NONE);
+						TEE_PARAM_TYPE_VALUE_OUTPUT);
 	struct remoteproc_context *ctx = NULL;
+	paddr_t rsc_pa = 0;
 
 	if (pt != exp_pt)
 		return TEE_ERROR_BAD_PARAMETERS;
@@ -1029,11 +1007,16 @@ static TEE_Result remoteproc_get_rsc_table(uint32_t pt,
 	if (ctx->state == REMOTEPROC_OFF)
 		return TEE_ERROR_BAD_STATE;
 
-	reg_pair_from_64((uint64_t)ctx->rsc_pa,
+	rsc_pa = remoteproc_da_to_pa(ctx->rsc_da, ctx->rsc_size, ctx);
+	if (!rsc_pa)
+		return TEE_ERROR_ACCESS_DENIED;
+
+	reg_pair_from_64((uint64_t)rsc_pa,
 			 &params[1].value.b, &params[1].value.a);
 	reg_pair_from_64((uint64_t)ctx->rsc_size,
 			 &params[2].value.b, &params[2].value.a);
-
+	reg_pair_from_64((uint64_t)ctx->rsc_da,
+			 &params[2].value.b, &params[3].value.a);
 	return TEE_SUCCESS;
 }
 

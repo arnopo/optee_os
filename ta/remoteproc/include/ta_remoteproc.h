@@ -48,6 +48,8 @@
  * [out] params[1].value.b:	32bit MSB resource table memory address
  * [out] params[2].value.a:	32bit LSB resource table memory size
  * [out] params[2].value.b:	32bit MSB resource table memory size
+ * [out] params[2].value.a:	32bit LSB resource table device memory address
+ * [out] params[2].value.b:	32bit MSB resource table device memory address
  */
 #define TA_RPROC_CMD_GET_RSC_TABLE	4
 
